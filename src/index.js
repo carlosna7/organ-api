@@ -3,6 +3,9 @@ import { startStandaloneServer } from '@apollo/server/standalone';
 import mongoose from 'mongoose';
 import {v4 as uuidv4} from 'uuid';
 import 'dotenv/config'
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcrypt';
+const saltRounds = 10;
 
 mongoose.connect(process.env.MONGO_DB)
 
@@ -24,8 +27,15 @@ const employeeSchema = new Schema({
   position: String,
   email: String,
   password: String,
-  tasks: [taskSchema]
+  tasks: [taskSchema],
+  token: String
 });
+
+const allEmailsSchema = new Schema({
+  email: String,
+  company: String,
+  isRegistered: { type: Boolean, default: false }
+})
 
 const companySchema = new Schema({
   companyId: String,
@@ -35,29 +45,9 @@ const companySchema = new Schema({
 });
 
 const CompaniesModel = mongoose.model('companies', companySchema);
+const EmployeesModel = mongoose.model('employees', allEmailsSchema);
 
 const typeDefs = `#graphql
-
-  type Query {
-    getCompany(companyId: ID!): Company
-    getCompanies: [Company]
-
-    getEmployee(companyId: ID!, employeeId: Int!): Employee
-    getEmployees(companyId: ID!): [Employee]
-    getSomeEmployee(companyId: ID!, employeeIds: [Int!]): [Employee]
-  }
-
-  input EmployeeInput {
-    name: String
-    position: String
-    email: String
-    password: String
-  }
-
-  type Mutation {
-    createCompany(name: String!, employee: EmployeeInput): Company
-    register(name: String!, position: String!, email: String!, password: String!): Employee
-  }
 
   type Company {
     _id: ID!
@@ -65,6 +55,12 @@ const typeDefs = `#graphql
     name: String!
     employees: [Employee]
     createdAt: String!
+  }
+
+  type AllEmails {
+    email: String
+    company: String
+    isRegistered: Boolean
   }
 
   type Employee {
@@ -75,6 +71,7 @@ const typeDefs = `#graphql
     email: String
     password: String
     tasks: [Task]
+    token: String
   }
 
   type Task {
@@ -86,6 +83,29 @@ const typeDefs = `#graphql
     completedAt: String
     status: String
   }
+
+  type Query {
+    getCompany(companyId: ID!): Company
+    getCompanies: [Company]
+
+    getEmployees(companyId: ID!): [Employee]
+    getEmployeeById(companyId: ID!, employeeId: Int!): Employee
+    getSomeEmployeeById(companyId: ID!, employeeIds: [Int!]): [Employee]
+  }
+
+  input EmployeeInput {
+    name: String
+    position: String
+    email: String!
+    password: String
+  }
+
+  type Mutation {
+    createCompany(name: String!, employee: EmployeeInput): Company
+    newEmployee(companyId: ID!, email: String!): AllEmails
+    register(name: String!, position: String!, email: String!, password: String!): Employee
+    login(email: String!, password: String!): Employee
+  }
 `;
 
 const resolvers = {
@@ -93,18 +113,18 @@ const resolvers = {
     getCompany: async (_, { companyId }) => CompaniesModel.findOne({ companyId }),
     getCompanies: async () => CompaniesModel.find(),
 
-    getEmployee: async (_, { companyId, employeeId }) => {
-      const companies = await CompaniesModel.findOne({ companyId })
-      const employee = companies.employees.find((employee) => employee.employeeId === employeeId)
-
-      return employee;
-    },
     getEmployees: async (_, { companyId }) => {
       const companies = await CompaniesModel.findOne({ companyId })
 
       return companies.employees;
     },
-    getSomeEmployee: async (_, { companyId, employeeIds }) => {
+    getEmployeeById: async (_, { companyId, employeeId }) => {
+      const companies = await CompaniesModel.findOne({ companyId })
+      const employee = companies.employees.find((employee) => employee.employeeId === employeeId)
+
+      return employee;
+    },
+    getSomeEmployeeById: async (_, { companyId, employeeIds }) => {
       const companies = await CompaniesModel.findOne({ companyId })
 
       if (employeeIds < 0) {
@@ -125,76 +145,146 @@ const resolvers = {
 
   Mutation: {
     createCompany: async (_, { name, employee }) => {
+      if (employee) {
+        // Verifica se o email já existe no banco de dados
+        const existingEmail = await EmployeesModel.findOne({ email: employee.email });
+        if (existingEmail) {
+          throw new Error('Email já está cadastrado!');
+          return null;
+        }
 
-      const newCompany = new CompaniesModel({
-        companyId: uuidv4(),
-        name: name,
-        employees: [
-          {
-            employeeId: 1, // primeiro id criado da empresa
-            name: employee.name,
-            position: employee.position,
-            email: employee.email,
-            password: employee.password,
-            tasks: []
-          }
-        ],
-        createdAt: new Date()
-      });
-      
-      await newCompany.save();
+        // Verifica se já existe uma empresa com esse nome
+        const existingCompany = await CompaniesModel.findOne({ name: name });
+        if (existingCompany) {
+          throw new Error('Empresa já cadastrada');
+          return null;
+        }
 
-      return newCompany;
+        // Cadastra a nova empresa
+        const newCompany = new CompaniesModel({
+          companyId: uuidv4(),
+          name: name,
+          employees: [
+            {
+              employeeId: 1, // primeiro id criado da empresa
+              name: employee.name,
+              position: employee.position,
+              email: employee.email,
+              password: employee.password,
+              tasks: [],
+              token: ""
+            }
+          ],
+          createdAt: new Date()
+        });
+
+        // Adiciona o email ao banco de emails cadastrados
+        const newEmail = new EmployeesModel({
+          email: employee.email,
+          company: name,
+          isRegistered: true
+        });
+
+        // Salva a empresa e o email no banco de dados
+        await newCompany.save();
+        await newEmail.save();
+
+        return newCompany;
+      }
+
+      return null; 
     },
+    newEmployee: async (_, { companyId, email }) => {
+      const company = await CompaniesModel.findOne({ companyId });
 
+      if (!company) {
+        throw new Error('Empresa não encontrada!');
+      }
+
+      if (!email) {
+        throw new Error('Email necessário!');
+      }
+
+      // Verifica se o email já existe no banco de dados
+      const existingEmail = await EmployeesModel.findOne({ email });
+      if (existingEmail) {
+        throw new Error('Email já está cadastrado!');
+      }
+
+      // Adiciona o email ao banco de emails cadastrados
+      const newEmail = new EmployeesModel({
+        email: email,
+        company: company.name,
+        isRegistered: false
+      });
+
+      // salvo email no banco de dados
+      await newEmail.save();
+
+      return newEmail;
+    },
     register: async (_, { name, position, email, password }) => {
 
-      // recebe todas a empresas
-      const companies = await CompaniesModel.find();
-
-      if (!companies || companies.length === 0) {
-        throw new Error('Company not found');
+      // Verifica se o email já existe no banco de dados
+      const employee = await EmployeesModel.findOne({ email });
+      if (!employee) {
+        throw new Error('Email não cadastrado pelo lider!');
+      }
+    
+      // Verifica se o email já está cadastrado
+      if (employee.isRegistered) {
+        throw new Error('Email já está cadastrado!');
       }
 
-      // identificação para registro (caso o email não exista o registro não funciona)
-      const findAuthorizedEmail = companies
-        .map((company) => company.employees) // pega somente os employees de cada empresa
-        .flat()
-        .filter((employees) => employees.email === email) // filtra somento o email dentro da lista de empregados que o usuário com permissão adicionou na lista de registros
+      const company = await CompaniesModel.findOne({ name: employee.company });
 
-      if (findAuthorizedEmail.length === 0) {
-        throw new Error('Email not authorized');
+      const newEmployee = {
+        employeeId: company.employees.length + 1,
+        name: name,
+        position: position,
+        email: email,
+        password: await bcrypt.hash(password, saltRounds),
+        tasks: [],
+        token: ""
       }
 
-      const authorizedEmail = findAuthorizedEmail[0].email;
+      company.employees.push(newEmployee)
+      await company.save()
 
-      if (authorizedEmail) {
-
-        const employeeToEdit = companies
-        .map((company) => company.employees)
-        .flat()
-        .filter((employees) => employees.email === email)
-
-        const newEmployee = {
-          employeeId: employeeToEdit[0].employeeId,
-          name: name,
-          position: position,
-          email: authorizedEmail,
-          password: password, // CRIPTOGRAFAR
-          tasks: []
-        };
-
-        console.log(newEmployee);
-  
-        company.employees.push(newEmployee);
-  
-        await company.save();
-  
-        return newEmployee;
-
-      } else {
-        console.log("Email não adicionado pelo lider");
+      return newEmployee;
+    },
+    login: async (_, { email, password }) => {
+      
+      // Verifica se o email já existe no banco de dados
+      const employee = await EmployeesModel.findOne({ email });
+      if (!employee) {
+        throw new Error('Email não cadastrado!');
       }
+
+      // Conferência prolixa
+      const company = await CompaniesModel.findOne({ name: employee.company });
+      if (!company) {
+        throw new Error('Empresa não encontrada!');
+      }
+
+      const findEmployee = company.employees.find((employee) => employee.email === email)
+      if (!findEmployee) {
+        throw new Error('Usuário não cadastrado!');
+      }
+
+      const passwordMatch = await bcrypt.compare(password, findEmployee.password);
+      const emailMatch = email === findEmployee.email; // Desnecessário
+      if (!passwordMatch || !emailMatch) {
+        throw new Error('Email ou Senha incorretos!');
+      }
+
+      const token = jwt.sign({ employeeId: findEmployee.employeeId }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+      findEmployee.token = token
+
+      // await company.save()
+
+      return findEmployee;
     }
   }
 };
