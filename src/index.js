@@ -15,7 +15,12 @@ const taskSchema = new Schema({
   taskId: Number,
   taskName: String,
   description: String,
-  leadershipLevel: Number,
+  responsibles: [
+    {
+      leadershipLevel: Number,
+      employee: { type: Schema.Types.ObjectId, ref: 'employees' }
+    }
+  ],
   createdAt: { type: Date, default: Date.now },
   completedAt: { type: Date, default: Date.now },
   status: String
@@ -74,11 +79,17 @@ const typeDefs = `#graphql
     token: String
   }
 
+  type Responsibility {
+    leadershipLevel: Int
+    employee: Employee
+  }
+
   type Task {
     taskId: Int
     taskName: String
     description: String
-    leadershipLevel: Int
+    # responsibles: [Employee]
+    responsibles: [Responsibility]
     createdAt: String
     completedAt: String
     status: String
@@ -100,11 +111,17 @@ const typeDefs = `#graphql
     password: String
   }
 
+  input TaskInput {
+    taskName: String
+    description: String
+  }
+
   type Mutation {
     createCompany(name: String!, employee: EmployeeInput): Company
     newEmployee(companyId: ID!, email: String!): AllEmails
     register(name: String!, position: String!, email: String!, password: String!): Employee
     login(email: String!, password: String!): Employee
+    createTask(companyId: ID!, employeeId: Int!, task: TaskInput): Task
   }
 `;
 
@@ -224,7 +241,6 @@ const resolvers = {
       return newEmail;
     },
     register: async (_, { name, position, email, password }) => {
-
       // Verifica se o email já existe no banco de dados
       const employee = await EmployeesModel.findOne({ email });
       if (!employee) {
@@ -249,10 +265,13 @@ const resolvers = {
       }
 
       company.employees.push(newEmployee)
+      employee.isRegistered = true
+      await employee.save()
       await company.save()
 
       return newEmployee;
     },
+    // adicionar token no front end e impedir que retorne a senha
     login: async (_, { email, password }) => {
       
       // Verifica se o email já existe no banco de dados
@@ -285,10 +304,43 @@ const resolvers = {
       // await company.save()
 
       return findEmployee;
-    }
+    },
+    createTask: async (_, { companyId, employeeId, task }) => {
+      // verifica se o id está correto
+      const company = await CompaniesModel.findOne({ companyId });
+      if (!company) {
+        throw new Error('Empresa não encontrada!');
+      }
+      // captura o empregado pelo id passado
+      const employee = company.employees.find((employee) => employee.employeeId === employeeId);
+      if (!employee) {
+        throw new Error('Funcionário não encontrado!');
+      }
+
+      const newTask = {
+        taskId: employee.tasks.length + 1,
+        taskName: task.taskName,
+        description: task.description,
+        responsibles: [{
+          leadershipLevel: 3,
+          employee: employee
+        }],
+        createdAt: new Date(),
+        completedAt: new Date(),
+        status: "pendente"
+      };
+
+      employee.tasks.push(newTask);
+      
+      await company.save();
+
+      return newTask;
+    },
+    
+    // updateTask: async (_, { companyId, employeeId, taskId, task }) => {},
+    // deleteTask: async (_, { companyId, employeeId, taskId }) => {},
   }
 };
-
 // The ApolloServer constructor requires two parameters: your schema
 const server = new ApolloServer({
   typeDefs,
