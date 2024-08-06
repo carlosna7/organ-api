@@ -32,7 +32,6 @@ const employeeSchema = new Schema({
   position: String,
   email: String,
   password: String,
-  tasks: [taskSchema],
   token: String
 });
 
@@ -46,6 +45,7 @@ const companySchema = new Schema({
   companyId: String,
   name: String,
   employees: [employeeSchema],
+  tasks: [taskSchema],
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -59,6 +59,7 @@ const typeDefs = `#graphql
     companyId: ID!
     name: String!
     employees: [Employee]
+    tasks: [Task]
     createdAt: String!
   }
 
@@ -75,7 +76,6 @@ const typeDefs = `#graphql
     position: String
     email: String
     password: String
-    tasks: [Task]
     token: String
   }
 
@@ -88,7 +88,6 @@ const typeDefs = `#graphql
     taskId: Int
     taskName: String
     description: String
-    # responsibles: [Employee]
     responsibles: [Responsibility]
     createdAt: String
     completedAt: String
@@ -98,7 +97,6 @@ const typeDefs = `#graphql
   type Query {
     getCompany(companyId: ID!): Company
     getCompanies: [Company]
-
     getEmployees(companyId: ID!): [Employee]
     getEmployeeById(companyId: ID!, employeeId: Int!): Employee
     getSomeEmployeeById(companyId: ID!, employeeIds: [Int!]): [Employee]
@@ -167,14 +165,12 @@ const resolvers = {
         const existingEmail = await EmployeesModel.findOne({ email: employee.email });
         if (existingEmail) {
           throw new Error('Email já está cadastrado!');
-          return null;
         }
 
         // Verifica se já existe uma empresa com esse nome
         const existingCompany = await CompaniesModel.findOne({ name: name });
         if (existingCompany) {
           throw new Error('Empresa já cadastrada');
-          return null;
         }
 
         // Cadastra a nova empresa
@@ -192,6 +188,7 @@ const resolvers = {
               token: ""
             }
           ],
+          tasks: [],
           createdAt: new Date()
         });
 
@@ -246,10 +243,11 @@ const resolvers = {
       if (!employee) {
         throw new Error('Email não cadastrado pelo lider!');
       }
-    
       // Verifica se o email já está cadastrado
       if (employee.isRegistered) {
         throw new Error('Email já está cadastrado!');
+      } else {
+        employee.isRegistered = true
       }
 
       const company = await CompaniesModel.findOne({ name: employee.company });
@@ -260,12 +258,11 @@ const resolvers = {
         position: position,
         email: email,
         password: await bcrypt.hash(password, saltRounds),
-        tasks: [],
         token: ""
       }
 
       company.employees.push(newEmployee)
-      employee.isRegistered = true
+
       await employee.save()
       await company.save()
 
@@ -273,7 +270,6 @@ const resolvers = {
     },
     // adicionar token no front end e impedir que retorne a senha
     login: async (_, { email, password }) => {
-      
       // Verifica se o email já existe no banco de dados
       const employee = await EmployeesModel.findOne({ email });
       if (!employee) {
@@ -305,6 +301,7 @@ const resolvers = {
 
       return findEmployee;
     },
+    // refatorar o createTask apra que as empresas tenham tasks e dentro das tasks estejam os funcionários e seus niveis de permissão
     createTask: async (_, { companyId, employeeId, task }) => {
       // verifica se o id está correto
       const company = await CompaniesModel.findOne({ companyId });
@@ -318,7 +315,7 @@ const resolvers = {
       }
 
       const newTask = {
-        taskId: employee.tasks.length + 1,
+        taskId: company.tasks.length + 1,
         taskName: task.taskName,
         description: task.description,
         responsibles: [{
@@ -330,8 +327,8 @@ const resolvers = {
         status: "pendente"
       };
 
-      employee.tasks.push(newTask);
-      
+      company.tasks.push(newTask);
+
       await company.save();
 
       return newTask;
