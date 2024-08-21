@@ -1,137 +1,17 @@
-import { ApolloServer } from '@apollo/server';
-import { startStandaloneServer } from '@apollo/server/standalone';
-import mongoose from 'mongoose';
-import {v4 as uuidv4} from 'uuid';
-import 'dotenv/config'
-import jwt from 'jsonwebtoken';
+import { CompaniesModel, EmployeesModel } from '../models/company.model.js';
 import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
+import { v4 as uuidv4 } from 'uuid';
+
 const saltRounds = 10;
 
-mongoose.connect(process.env.MONGO_DB)
-
-const { Schema } = mongoose;
-
-const taskSchema = new Schema({
-  taskId: Number,
-  taskName: String,
-  description: String,
-  responsibles: [
-    {
-      leadershipLevel: Number,
-      employee: { type: Schema.Types.ObjectId, ref: 'employees' }
-    }
-  ],
-  createdAt: { type: Date, default: Date.now },
-  completedAt: { type: Date, default: Date.now },
-  status: String
-});
-
-const employeeSchema = new Schema({
-  employeeId: Number,
-  name: String,
-  position: String,
-  email: String,
-  password: String,
-  token: String
-});
-
-const allEmailsSchema = new Schema({
-  email: String,
-  company: String,
-  isRegistered: { type: Boolean, default: false }
-})
-
-const companySchema = new Schema({
-  companyId: String,
-  name: String,
-  employees: [employeeSchema],
-  tasks: [taskSchema],
-  createdAt: { type: Date, default: Date.now }
-});
-
-const CompaniesModel = mongoose.model('companies', companySchema);
-const EmployeesModel = mongoose.model('employees', allEmailsSchema);
-
-const typeDefs = `#graphql
-
-  type Company {
-    _id: ID!
-    companyId: ID!
-    name: String!
-    employees: [Employee]
-    tasks: [Task]
-    createdAt: String!
-  }
-
-  type AllEmails {
-    email: String
-    company: String
-    isRegistered: Boolean
-  }
-
-  type Employee {
-    _id: ID!
-    employeeId: Int
-    name: String
-    position: String
-    email: String
-    password: String
-    token: String
-  }
-
-  type Responsibility {
-    leadershipLevel: Int
-    employee: Employee
-  }
-
-  type Task {
-    taskId: Int
-    taskName: String
-    description: String
-    responsibles: [Responsibility]
-    createdAt: String
-    completedAt: String
-    status: String
-  }
-
-  type Query {
-    getCompany(companyId: ID!): Company
-    getCompanies: [Company]
-    getEmployees(companyId: ID!): [Employee]
-    getEmployeeById(companyId: ID!, employeeId: Int!): Employee
-    getSomeEmployeeById(companyId: ID!, employeeIds: [Int!]): [Employee]
-  }
-
-  input EmployeeInput {
-    name: String
-    position: String
-    email: String!
-    password: String
-  }
-
-  input TaskInput {
-    taskName: String
-    description: String
-  }
-
-  type Mutation {
-    createCompany(name: String!, employee: EmployeeInput): Company
-    newEmployee(companyId: ID!, email: String!): AllEmails
-    register(name: String!, position: String!, email: String!, password: String!): Employee
-    login(email: String!, password: String!): Employee
-    createTask(companyId: ID!, employeeId: Int!, task: TaskInput): Task
-  }
-`;
-
-const resolvers = {
+export const resolvers = {
   Query: {
     getCompany: async (_, { companyId }) => CompaniesModel.findOne({ companyId }),
     getCompanies: async () => CompaniesModel.find(),
-
     getEmployees: async (_, { companyId }) => {
-      const companies = await CompaniesModel.findOne({ companyId })
-
-      return companies.employees;
+      const company = await CompaniesModel.findOne({ companyId });
+      return company ? company.employees : [];
     },
     getEmployeeById: async (_, { companyId, employeeId }) => {
       const companies = await CompaniesModel.findOne({ companyId })
@@ -157,7 +37,6 @@ const resolvers = {
       }
     },
   },
-
   Mutation: {
     createCompany: async (_, { name, employee }) => {
       if (employee) {
@@ -166,7 +45,6 @@ const resolvers = {
         if (existingEmail) {
           throw new Error('Email já está cadastrado!');
         }
-
         // Verifica se já existe uma empresa com esse nome
         const existingCompany = await CompaniesModel.findOne({ name: name });
         if (existingCompany) {
@@ -183,7 +61,7 @@ const resolvers = {
               name: employee.name,
               position: employee.position,
               email: employee.email,
-              password: employee.password,
+              password: await bcrypt.hash(employee.password, saltRounds),
               tasks: [],
               token: ""
             }
@@ -191,7 +69,6 @@ const resolvers = {
           tasks: [],
           createdAt: new Date()
         });
-
         // Adiciona o email ao banco de emails cadastrados
         const newEmail = new EmployeesModel({
           email: employee.email,
@@ -202,7 +79,6 @@ const resolvers = {
         // Salva a empresa e o email no banco de dados
         await newCompany.save();
         await newEmail.save();
-
         return newCompany;
       }
 
@@ -210,11 +86,9 @@ const resolvers = {
     },
     newEmployee: async (_, { companyId, email }) => {
       const company = await CompaniesModel.findOne({ companyId });
-
       if (!company) {
         throw new Error('Empresa não encontrada!');
       }
-
       if (!email) {
         throw new Error('Email necessário!');
       }
@@ -224,7 +98,6 @@ const resolvers = {
       if (existingEmail) {
         throw new Error('Email já está cadastrado!');
       }
-
       // Adiciona o email ao banco de emails cadastrados
       const newEmail = new EmployeesModel({
         email: email,
@@ -234,7 +107,6 @@ const resolvers = {
 
       // salvo email no banco de dados
       await newEmail.save();
-
       return newEmail;
     },
     register: async (_, { name, position, email, password }) => {
@@ -251,7 +123,6 @@ const resolvers = {
       }
 
       const company = await CompaniesModel.findOne({ name: employee.company });
-
       const newEmployee = {
         employeeId: company.employees.length + 1,
         name: name,
@@ -265,43 +136,38 @@ const resolvers = {
 
       await employee.save()
       await company.save()
-
       return newEmployee;
     },
-    // adicionar token no front end e impedir que retorne a senha
-    login: async (_, { email, password }) => {
+    // adicionar token no front end
+    login: async (_, { email, password }, { res }) => {
       // Verifica se o email já existe no banco de dados
       const employee = await EmployeesModel.findOne({ email });
       if (!employee) {
-        throw new Error('Email não cadastrado!');
+        throw new Error('Email não encontrado!');
       }
-
-      // Conferência prolixa
       const company = await CompaniesModel.findOne({ name: employee.company });
       if (!company) {
-        throw new Error('Empresa não encontrada!');
+        throw new Error('Email não possui empresa!'); 
       }
-
       const findEmployee = company.employees.find((employee) => employee.email === email)
       if (!findEmployee) {
         throw new Error('Usuário não cadastrado!');
       }
-
       const passwordMatch = await bcrypt.compare(password, findEmployee.password);
-      const emailMatch = email === findEmployee.email; // Desnecessário
-      if (!passwordMatch || !emailMatch) {
+      if (!passwordMatch) {
         throw new Error('Email ou Senha incorretos!');
       }
 
-      const token = jwt.sign({ employeeId: findEmployee.employeeId }, process.env.JWT_SECRET, { expiresIn: '1h' });
+      const token = jwt.sign({ 
+        employeeId: findEmployee.employeeId,
+        companyId: company.companyId
+      }, process.env.JWT_SECRET, { expiresIn: '1m' });
 
       findEmployee.token = token
-
-      // await company.save()
-
+      await company.save()
       return findEmployee;
     },
-    // refatorar o createTask apra que as empresas tenham tasks e dentro das tasks estejam os funcionários e seus niveis de permissão
+
     createTask: async (_, { companyId, employeeId, task }) => {
       // verifica se o id está correto
       const company = await CompaniesModel.findOne({ companyId });
@@ -328,24 +194,9 @@ const resolvers = {
       };
 
       company.tasks.push(newTask);
-
       await company.save();
-
       return newTask;
     },
-    
-    // updateTask: async (_, { companyId, employeeId, taskId, task }) => {},
-    // deleteTask: async (_, { companyId, employeeId, taskId }) => {},
-  }
+  },
 };
-// The ApolloServer constructor requires two parameters: your schema
-const server = new ApolloServer({
-  typeDefs,
-  resolvers,
-});
 
-const { url } = await startStandaloneServer(server, {
-  listen: { port: 3000 },
-});
-
-console.log(`🚀  Server ready at: ${url}`);
