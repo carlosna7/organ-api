@@ -36,6 +36,9 @@ export const resolvers = {
         return employeeList;
       }
     },
+    logout: async (_, __, { req, res }) => {
+      return "return"
+    }
   },
   Mutation: {
     createCompany: async (_, { name, employee }) => {
@@ -138,7 +141,6 @@ export const resolvers = {
       await company.save()
       return newEmployee;
     },
-    // adicionar token no front end
     login: async (_, { email, password }, { res }) => {
       // Verifica se o email já existe no banco de dados
       const employee = await EmployeesModel.findOne({ email });
@@ -158,14 +160,21 @@ export const resolvers = {
         throw new Error('Email ou Senha incorretos!');
       }
 
-      const token = jwt.sign({ 
-        employeeId: findEmployee.employeeId,
-        companyId: company.companyId
+      const token = await jwt.sign({ 
+        eId: findEmployee.employeeId,
+        cId: company.companyId
       }, process.env.JWT_SECRET, { expiresIn: '1m' });
 
-      findEmployee.token = token
+      findEmployee.token = token;
+
+      const tokenData = {
+        companyId: company.companyId,
+        employeeId: findEmployee.employeeId,
+        token: token
+      }
+
       await company.save()
-      return findEmployee;
+      return tokenData;
     },
 
     createTask: async (_, { companyId, employeeId, task }) => {
@@ -199,4 +208,3 @@ export const resolvers = {
     },
   },
 };
-

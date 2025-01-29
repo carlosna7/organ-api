@@ -37,12 +37,19 @@ export const typeDefs = `#graphql
     status: String
   }
 
+  type LoginResponse {
+    companyId: ID!
+    employeeId: ID!
+    token: String!
+  }
+
   type Query {
     getCompany(companyId: ID!): Company
     getCompanies: [Company]
     getEmployees(companyId: ID!): [Employee]
     getEmployeeById(companyId: ID!, employeeId: Int!): Employee
     getSomeEmployeeById(companyId: ID!, employeeIds: [Int!]): [Employee]
+    logout: String
   }
 
   input EmployeeInput {
@@ -61,7 +68,7 @@ export const typeDefs = `#graphql
     createCompany(name: String!, employee: EmployeeInput): Company
     newEmployee(companyId: ID!, email: String!): AllEmails
     register(name: String!, position: String!, email: String!, password: String!): Employee
-    login(email: String!, password: String!): Employee
+    login(email: String!, password: String!): LoginResponse!
     createTask(companyId: ID!, employeeId: Int!, task: TaskInput): Task
   }
 `;
