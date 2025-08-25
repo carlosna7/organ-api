@@ -21,23 +21,19 @@ const employeeSchema = new Schema({
   name: String,
   position: String,
   email: String,
-  password: String,
-  token: String
-});
-
-const allEmailsSchema = new Schema({
-  email: String,
-  company: String,
-  isRegistered: { type: Boolean, default: false }
+  password: { type: String, select: false },
+  isRegistered: { type: Boolean, default: false },
+  company: { type: Schema.Types.ObjectId, ref: 'companies' }
 });
 
 const companySchema = new Schema({
   companyId: String,
   name: String,
-  employees: [employeeSchema],
+  employees: [{ type: Schema.Types.ObjectId, ref: 'employees' }],
   tasks: [taskSchema],
   createdAt: { type: Date, default: Date.now }
 });
 
 export const CompaniesModel = mongoose.model('companies', companySchema);
-export const EmployeesModel = mongoose.model('employees', allEmailsSchema);
+export const EmployeesModel = mongoose.model('employees', employeeSchema);
+export const TasksModel = mongoose.model('tasks', taskSchema);

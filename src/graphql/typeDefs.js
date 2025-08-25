@@ -8,18 +8,15 @@ export const typeDefs = `#graphql
     createdAt: String!
   }
 
-  type AllEmails {
-    email: String
-    company: String
-    isRegistered: Boolean
-  }
-
   type Employee {
     _id: ID!
     employeeId: Int
     name: String
     position: String
-    token: String
+    email: String
+    password: String
+    isRegistered: Boolean
+    company: Company
   }
 
   type Responsibility {
@@ -35,12 +32,6 @@ export const typeDefs = `#graphql
     createdAt: String
     completedAt: String
     status: String
-  }
-
-  type LoginResponse {
-    companyId: ID!
-    employeeId: ID!
-    token: String!
   }
 
   type Query {
@@ -66,9 +57,9 @@ export const typeDefs = `#graphql
 
   type Mutation {
     createCompany(name: String!, employee: EmployeeInput): Company
-    newEmployee(companyId: ID!, email: String!): AllEmails
+    newEmployee(companyId: ID!, email: String!): Employee
     register(name: String!, position: String!, email: String!, password: String!): Employee
-    login(email: String!, password: String!): LoginResponse!
+    login(email: String!, password: String!): Employee
     createTask(companyId: ID!, employeeId: Int!, task: TaskInput): Task
   }
 `;
