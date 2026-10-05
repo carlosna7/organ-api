@@ -1,6 +1,8 @@
 import { CompaniesModel } from '../models/company.model.js';
 import { EmployeesModel } from '../models/employee.model.js';
 import { TasksModel, TASK_STATUS } from '../models/task.model.js';
+import { TeamsModel } from '../models/team.model.js';
+import { ProjectsModel } from '../models/project.model.js';
 import { signToken, appError, requireAuth, requireLeader } from '../auth/auth.js';
 import bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
@@ -86,6 +88,16 @@ const runInQueue = (key, task) => {
 	return result;
 };
 
+// Guarda o resultado de uma busca durante a requisição (a lista de tarefas pede o mesmo projeto várias vezes)
+// O load precisa devolver uma Promise de verdade (use .exec()): uma Query do Mongoose só pode ser executada uma vez
+const loadOnce = (ctx, key, load) => {
+	ctx.cache ??= new Map();
+	if (!ctx.cache.has(key)) {
+		ctx.cache.set(key, load());
+	}
+	return ctx.cache.get(key);
+};
+
 // Busca uma tarefa da empresa do usuário
 const findTask = async (companyId, taskId) => {
 	const task = await TasksModel.findOne({ company: companyId, taskId });
@@ -124,6 +136,69 @@ const buildResponsibles = async (companyId, responsibles) => {
 		leadershipLevel,
 		employee: employees.find((employee) => employee.employeeId === employeeId)._id,
 	}));
+};
+
+// Texto opcional: sem espaços nas pontas e null quando vazio
+const optionalText = (value) => (typeof value === 'string' ? value.trim() || null : null);
+
+// Verifica se já existe um item com o mesmo nome na empresa (ignora maiúsculas)
+const nameTaken = (Model, companyId, name, excludeId) => {
+	const filter = { company: companyId, name };
+	if (excludeId) {
+		filter._id = { $ne: excludeId };
+	}
+	return Model.exists(filter).collation({ locale: 'pt', strength: 2 });
+};
+
+// Busca uma equipe da empresa do usuário
+const findTeam = async (companyId, teamId) => {
+	const team = await TeamsModel.findOne({ company: companyId, teamId });
+	if (!team) {
+		throw appError('Equipe não encontrada!', 'NOT_FOUND');
+	}
+	return team;
+};
+
+// Busca um projeto da empresa do usuário
+const findProject = async (companyId, projectId) => {
+	const project = await ProjectsModel.findOne({ company: companyId, projectId });
+	if (!project) {
+		throw appError('Projeto não encontrado!', 'NOT_FOUND');
+	}
+	return project;
+};
+
+// Troca o projectId pelo _id do projeto (null ou ausente = sem projeto)
+const resolveProjectRef = async (companyId, projectId) => {
+	if (projectId === null || projectId === undefined) {
+		return null;
+	}
+	return (await findProject(companyId, projectId))._id;
+};
+
+// Troca o teamId pelo _id da equipe (null ou ausente = sem equipe)
+const resolveTeamRef = async (companyId, teamId) => {
+	if (teamId === null || teamId === undefined) {
+		return null;
+	}
+	return (await findTeam(companyId, teamId))._id;
+};
+
+// Valida os membros da equipe e troca o employeeId pelo _id do funcionário
+const resolveTeamMembers = async (companyId, memberIds) => {
+	const uniqueIds = [...new Set(memberIds)];
+
+	// Os membros precisam ser funcionários registrados da mesma empresa
+	const employees = await EmployeesModel.find({
+		company: companyId,
+		employeeId: { $in: uniqueIds },
+		isRegistered: true,
+	}).sort({ employeeId: 1 });
+	if (employees.length !== uniqueIds.length) {
+		throw appError('Membro não encontrado ou ainda não registrado!', 'BAD_USER_INPUT');
+	}
+
+	return employees.map((employee) => employee._id);
 };
 
 export const resolvers = {
@@ -176,6 +251,18 @@ export const resolvers = {
 				filter.status = status;
 			}
 			return TasksModel.find(filter).sort({ createdAt: -1, taskId: -1 });
+		},
+
+		// Em ordem de criação
+		getTeams: async (_, __, ctx) => {
+			const user = requireAuth(ctx);
+			return TeamsModel.find({ company: user.company }).sort({ teamId: 1 });
+		},
+
+		// Em ordem de criação
+		getProjects: async (_, __, ctx) => {
+			const user = requireAuth(ctx);
+			return ProjectsModel.find({ company: user.company }).sort({ projectId: 1 });
 		},
 	},
 	Mutation: {
@@ -286,10 +373,14 @@ export const resolvers = {
 				throw appError('Funcionário não encontrado!', 'NOT_FOUND');
 			}
 
-			// Tira o funcionário dos responsáveis das tarefas
+			// Tira o funcionário dos responsáveis das tarefas e dos membros das equipes
 			await TasksModel.updateMany(
 				{ company: user.company },
 				{ $pull: { responsibles: { employee: employee._id } } }
+			);
+			await TeamsModel.updateMany(
+				{ company: user.company },
+				{ $pull: { members: employee._id } }
 			);
 
 			return true;
@@ -357,6 +448,9 @@ export const resolvers = {
 				? await buildResponsibles(user.company, task.responsibles)
 				: [{ leadershipLevel: 3, employee: user.id }];
 
+			// Projeto opcional (precisa existir na empresa)
+			const project = await resolveProjectRef(user.company, task.projectId);
+
 			const taskId = await nextCounter(user.company, 'task');
 
 			return TasksModel.create({
@@ -365,6 +459,7 @@ export const resolvers = {
 				taskName,
 				description: task.description?.trim() || null,
 				status: 'pendente',
+				project,
 				responsibles,
 			});
 		},
@@ -379,6 +474,10 @@ export const resolvers = {
 			}
 			if (task.description !== undefined) {
 				existingTask.description = task.description?.trim() || null;
+			}
+			// null tira a tarefa do projeto; ausente não altera
+			if (task.projectId !== undefined) {
+				existingTask.project = await resolveProjectRef(user.company, task.projectId);
 			}
 			if (task.responsibles) {
 				// Lista vazia deixaria a tarefa sem responsável; ausente/null não altera
@@ -424,6 +523,158 @@ export const resolvers = {
 			}
 			return true;
 		},
+
+		createTeam: async (_, { team }, ctx) => {
+			const user = requireLeader(ctx);
+			const name = requireText(team.name, 'nome da equipe');
+			const members = await resolveTeamMembers(user.company, team.memberIds ?? []);
+
+			if (await nameTaken(TeamsModel, user.company, name)) {
+				throw appError('Já existe uma equipe com esse nome!', 'CONFLICT');
+			}
+
+			const teamId = await nextCounter(user.company, 'team');
+			try {
+				return await TeamsModel.create({
+					company: user.company,
+					teamId,
+					name,
+					description: optionalText(team.description),
+					members,
+				});
+			} catch (error) {
+				if (isDuplicateKey(error)) {
+					// Nome duplicado por outra requisição: devolve o número reservado
+					if (error.keyPattern?.name) {
+						await releaseCounter(user.company, 'team', teamId);
+					}
+					throw appError('Já existe uma equipe com esse nome!', 'CONFLICT');
+				}
+				throw error;
+			}
+		},
+
+		updateTeam: async (_, { teamId, team }, ctx) => {
+			const user = requireLeader(ctx);
+			const existingTeam = await findTeam(user.company, teamId);
+
+			// Atualiza só os campos enviados
+			if (team.name !== undefined && team.name !== null) {
+				const name = requireText(team.name, 'nome da equipe');
+				if (await nameTaken(TeamsModel, user.company, name, existingTeam._id)) {
+					throw appError('Já existe uma equipe com esse nome!', 'CONFLICT');
+				}
+				existingTeam.name = name;
+			}
+			if (team.description !== undefined) {
+				existingTeam.description = optionalText(team.description);
+			}
+			// Lista vazia deixa a equipe sem membros; ausente/null não altera
+			if (team.memberIds) {
+				existingTeam.members = await resolveTeamMembers(user.company, team.memberIds);
+			}
+
+			try {
+				return await existingTeam.save();
+			} catch (error) {
+				if (isDuplicateKey(error)) {
+					throw appError('Já existe uma equipe com esse nome!', 'CONFLICT');
+				}
+				throw error;
+			}
+		},
+
+		deleteTeam: async (_, { teamId }, ctx) => {
+			const user = requireLeader(ctx);
+			const team = await TeamsModel.findOneAndDelete({ company: user.company, teamId });
+			if (!team) {
+				throw appError('Equipe não encontrada!', 'NOT_FOUND');
+			}
+
+			// Os projetos da equipe continuam existindo, só ficam sem equipe
+			await ProjectsModel.updateMany(
+				{ company: user.company, team: team._id },
+				{ $set: { team: null } }
+			);
+
+			return true;
+		},
+
+		createProject: async (_, { project }, ctx) => {
+			const user = requireLeader(ctx);
+			const name = requireText(project.name, 'nome do projeto');
+			const team = await resolveTeamRef(user.company, project.teamId);
+
+			if (await nameTaken(ProjectsModel, user.company, name)) {
+				throw appError('Já existe um projeto com esse nome!', 'CONFLICT');
+			}
+
+			const projectId = await nextCounter(user.company, 'project');
+			try {
+				return await ProjectsModel.create({
+					company: user.company,
+					projectId,
+					name,
+					description: optionalText(project.description),
+					team,
+				});
+			} catch (error) {
+				if (isDuplicateKey(error)) {
+					// Nome duplicado por outra requisição: devolve o número reservado
+					if (error.keyPattern?.name) {
+						await releaseCounter(user.company, 'project', projectId);
+					}
+					throw appError('Já existe um projeto com esse nome!', 'CONFLICT');
+				}
+				throw error;
+			}
+		},
+
+		updateProject: async (_, { projectId, project }, ctx) => {
+			const user = requireLeader(ctx);
+			const existingProject = await findProject(user.company, projectId);
+
+			// Atualiza só os campos enviados
+			if (project.name !== undefined && project.name !== null) {
+				const name = requireText(project.name, 'nome do projeto');
+				if (await nameTaken(ProjectsModel, user.company, name, existingProject._id)) {
+					throw appError('Já existe um projeto com esse nome!', 'CONFLICT');
+				}
+				existingProject.name = name;
+			}
+			if (project.description !== undefined) {
+				existingProject.description = optionalText(project.description);
+			}
+			// null tira o projeto da equipe; ausente não altera
+			if (project.teamId !== undefined) {
+				existingProject.team = await resolveTeamRef(user.company, project.teamId);
+			}
+
+			try {
+				return await existingProject.save();
+			} catch (error) {
+				if (isDuplicateKey(error)) {
+					throw appError('Já existe um projeto com esse nome!', 'CONFLICT');
+				}
+				throw error;
+			}
+		},
+
+		deleteProject: async (_, { projectId }, ctx) => {
+			const user = requireLeader(ctx);
+			const project = await ProjectsModel.findOneAndDelete({ company: user.company, projectId });
+			if (!project) {
+				throw appError('Projeto não encontrado!', 'NOT_FOUND');
+			}
+
+			// As tarefas do projeto continuam existindo, só ficam sem projeto
+			await TasksModel.updateMany(
+				{ company: user.company, project: project._id },
+				{ $set: { project: null } }
+			);
+
+			return true;
+		},
 	},
 
 	Company: {
@@ -441,7 +692,26 @@ export const resolvers = {
 	},
 
 	Task: {
+		project: async (task, _, ctx) => (
+			task.project ? loadOnce(ctx, `project:${task.project}`, () => ProjectsModel.findById(task.project).exec()) : null
+		),
 		createdAt: (task) => toISO(task.createdAt),
 		completedAt: (task) => toISO(task.completedAt),
+	},
+
+	Team: {
+		members: async (team) => EmployeesModel.find({ _id: { $in: team.members }, company: team.company })
+			.sort({ employeeId: 1 }),
+		projects: async (team) => ProjectsModel.find({ company: team.company, team: team._id }).sort({ projectId: 1 }),
+		createdAt: (team) => toISO(team.createdAt),
+	},
+
+	Project: {
+		team: async (project, _, ctx) => (
+			project.team ? loadOnce(ctx, `team:${project.team}`, () => TeamsModel.findById(project.team).exec()) : null
+		),
+		tasks: async (project) => TasksModel.find({ company: project.company, project: project._id })
+			.sort({ createdAt: -1, taskId: -1 }),
+		createdAt: (project) => toISO(project.createdAt),
 	},
 };

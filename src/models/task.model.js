@@ -9,6 +9,8 @@ const taskSchema = new Schema({
   taskName: { type: String, required: true, trim: true },
   description: { type: String, default: null },
   status: { type: String, enum: TASK_STATUS, default: 'pendente' },
+  // Projeto da tarefa (opcional)
+  project: { type: Schema.Types.ObjectId, ref: 'projects', default: null },
   responsibles: [
     {
       _id: false,

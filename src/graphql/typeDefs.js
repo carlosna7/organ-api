@@ -40,9 +40,30 @@ export const typeDefs = `#graphql
     taskName: String!
     description: String
     status: TaskStatus!
+    project: Project
     responsibles: [Responsibility!]!
     createdAt: String!
     completedAt: String
+  }
+
+  type Team {
+    _id: ID!
+    teamId: Int!
+    name: String!
+    description: String
+    members: [Employee!]!
+    projects: [Project!]!
+    createdAt: String!
+  }
+
+  type Project {
+    _id: ID!
+    projectId: Int!
+    name: String!
+    description: String
+    team: Team
+    tasks: [Task!]!
+    createdAt: String!
   }
 
   type AuthPayload {
@@ -65,13 +86,39 @@ export const typeDefs = `#graphql
   input TaskInput {
     taskName: String!
     description: String
+    projectId: Int
     responsibles: [ResponsibleInput!]
   }
 
   input TaskUpdateInput {
     taskName: String
     description: String
+    projectId: Int
     responsibles: [ResponsibleInput!]
+  }
+
+  input TeamInput {
+    name: String!
+    description: String
+    memberIds: [Int!]
+  }
+
+  input TeamUpdateInput {
+    name: String
+    description: String
+    memberIds: [Int!]
+  }
+
+  input ProjectInput {
+    name: String!
+    description: String
+    teamId: Int
+  }
+
+  input ProjectUpdateInput {
+    name: String
+    description: String
+    teamId: Int
   }
 
   type Query {
@@ -81,6 +128,8 @@ export const typeDefs = `#graphql
     getEmployeeById(employeeId: Int!): Employee
     getSomeEmployeeById(employeeIds: [Int!]): [Employee!]!
     getTasks(status: TaskStatus): [Task!]!
+    getTeams: [Team!]!
+    getProjects: [Project!]!
   }
 
   type Mutation {
@@ -93,5 +142,11 @@ export const typeDefs = `#graphql
     updateTask(taskId: Int!, task: TaskUpdateInput!): Task!
     updateTaskStatus(taskId: Int!, status: TaskStatus!): Task!
     deleteTask(taskId: Int!): Boolean!
+    createTeam(team: TeamInput!): Team!
+    updateTeam(teamId: Int!, team: TeamUpdateInput!): Team!
+    deleteTeam(teamId: Int!): Boolean!
+    createProject(project: ProjectInput!): Project!
+    updateProject(projectId: Int!, project: ProjectUpdateInput!): Project!
+    deleteProject(projectId: Int!): Boolean!
   }
 `;
