@@ -12,4 +12,7 @@ const companySchema = new Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
+// Nome único na plataforma, ignorando maiúsculas (mesma collation da busca por nome)
+companySchema.index({ name: 1 }, { unique: true, collation: { locale: 'pt', strength: 2 } });
+
 export const CompaniesModel = mongoose.model('companies', companySchema);

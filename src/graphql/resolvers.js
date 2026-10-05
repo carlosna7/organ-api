@@ -59,6 +59,33 @@ const nextCounter = async (companyId, field) => {
 	return company.counters[field];
 };
 
+// Devolve o número reservado ao contador, mas só se ninguém reservou outro depois
+// (assim nunca reaproveita um número que já pode ter sido entregue)
+const releaseCounter = async (companyId, field, reserved) => {
+	try {
+		await CompaniesModel.updateOne(
+			{ _id: companyId, [`counters.${field}`]: reserved },
+			{ $inc: { [`counters.${field}`]: -1 } }
+		);
+	} catch {
+		// Se não devolver, só fica um número sem uso
+	}
+};
+
+// Executa as tarefas de uma mesma chave em fila, uma de cada vez (neste processo)
+const queues = new Map();
+const runInQueue = (key, task) => {
+	const result = (queues.get(key) ?? Promise.resolve()).then(task);
+	const tail = result.catch(() => {});
+	queues.set(key, tail);
+	tail.then(() => {
+		if (queues.get(key) === tail) {
+			queues.delete(key);
+		}
+	});
+	return result;
+};
+
 // Busca uma tarefa da empresa do usuário
 const findTask = async (companyId, taskId) => {
 	const task = await TasksModel.findOne({ company: companyId, taskId });
@@ -174,11 +201,20 @@ export const resolvers = {
 			}
 
 			// Cadastra a nova empresa (o líder já usa o employeeId 1)
-			const newCompany = await CompaniesModel.create({
-				companyId: uuidv4(),
-				name: companyName,
-				counters: { employee: 1, task: 0 },
-			});
+			// O índice único do nome barra cadastros simultâneos com o mesmo nome
+			let newCompany;
+			try {
+				newCompany = await CompaniesModel.create({
+					companyId: uuidv4(),
+					name: companyName,
+					counters: { employee: 1, task: 0 },
+				});
+			} catch (error) {
+				if (isDuplicateKey(error)) {
+					throw appError('Empresa já cadastrada!', 'CONFLICT');
+				}
+				throw error;
+			}
 
 			// Cria o líder da empresa; se falhar, apaga a empresa criada
 			try {
@@ -206,28 +242,35 @@ export const resolvers = {
 			const user = requireLeader(ctx);
 			const normalizedEmail = validateEmail(email);
 
-			// Verifica se o email já existe no banco de dados
-			const existingEmail = await EmployeesModel.exists({ email: normalizedEmail });
-			if (existingEmail) {
-				throw appError('Email já está cadastrado!', 'CONFLICT');
-			}
-
-			// Cria o convite já com o próximo employeeId da empresa
-			const employeeId = await nextCounter(user.company, 'employee');
-			try {
-				return await EmployeesModel.create({
-					employeeId,
-					email: normalizedEmail,
-					role: 'member',
-					isRegistered: false,
-					company: user.company,
-				});
-			} catch (error) {
-				if (isDuplicateKey(error)) {
+			// Convites da mesma empresa entram em fila: um email repetido não gasta número do contador
+			return runInQueue(String(user.company), async () => {
+				// Verifica se o email já existe no banco de dados
+				const existingEmail = await EmployeesModel.exists({ email: normalizedEmail });
+				if (existingEmail) {
 					throw appError('Email já está cadastrado!', 'CONFLICT');
 				}
-				throw error;
-			}
+
+				// Cria o convite já com o próximo employeeId da empresa
+				const employeeId = await nextCounter(user.company, 'employee');
+				try {
+					return await EmployeesModel.create({
+						employeeId,
+						email: normalizedEmail,
+						role: 'member',
+						isRegistered: false,
+						company: user.company,
+					});
+				} catch (error) {
+					if (isDuplicateKey(error)) {
+						// Email duplicado por outra empresa ou servidor: devolve o número reservado
+						if (error.keyPattern?.email) {
+							await releaseCounter(user.company, 'employee', employeeId);
+						}
+						throw appError('Email já está cadastrado!', 'CONFLICT');
+					}
+					throw error;
+				}
+			});
 		},
 
 		removeEmployee: async (_, { employeeId }, ctx) => {
@@ -338,6 +381,10 @@ export const resolvers = {
 				existingTask.description = task.description?.trim() || null;
 			}
 			if (task.responsibles) {
+				// Lista vazia deixaria a tarefa sem responsável; ausente/null não altera
+				if (task.responsibles.length === 0) {
+					throw appError('Selecione ao menos um responsável!', 'BAD_USER_INPUT');
+				}
 				existingTask.responsibles = await buildResponsibles(user.company, task.responsibles);
 			}
 

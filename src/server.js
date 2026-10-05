@@ -26,6 +26,9 @@ await connectDB();
 
 const app = express();
 
+// Não revela que o servidor usa Express
+app.disable('x-powered-by');
+
 // configurar cors
 app.use(cors({
   origin: CORS_ORIGIN,
@@ -36,6 +39,8 @@ app.use(cors({
 const server = new ApolloServer({
   typeDefs,
   resolvers,
+  // Nunca devolve stack trace ao cliente (independe do NODE_ENV)
+  includeStacktraceInErrorResponses: false,
   // Esconde detalhes de erros inesperados do cliente
   formatError: (formattedError, error) => {
     if (formattedError.extensions?.code === 'INTERNAL_SERVER_ERROR') {
@@ -52,6 +57,22 @@ await server.start();
 app.use('/', express.json(), expressMiddleware(server, {
   context: buildContext,
 }));
+
+// Erros do Express (ex.: JSON malformado) em JSON limpo, sem stack
+// (precisa dos 4 argumentos para o Express reconhecer como handler de erro)
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  const status = err.status || err.statusCode;
+  if (status >= 400 && status < 500) {
+    return res.status(status).json({
+      errors: [{ message: 'Requisição inválida!', extensions: { code: 'BAD_REQUEST' } }],
+    });
+  }
+  console.error(err);
+  return res.status(500).json({
+    errors: [{ message: 'Erro interno do servidor!', extensions: { code: 'INTERNAL_SERVER_ERROR' } }],
+  });
+});
 
 // iniciar o servidor express
 app.listen(PORT, () => {
